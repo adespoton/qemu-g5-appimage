@@ -1,0 +1,228 @@
+#!/bin/bash
+set -e
+
+TO_LAUNCH="$1"; shift
+APPDIR="${APPDIR:?APPDIR must be set by AppRun}"
+STATE="${QEMU_G5_STATE:-${XDG_DATA_HOME:-$HOME/.local/share}/qemu-g5}"
+DISK="${QEMU_G5_DISK:-$STATE/disk.qcow2}"
+BIOSDIR="$APPDIR/share/qemu"
+
+usage() {
+    local name="${APPIMAGE:-qemu-g5-x86_64.AppImage}"
+    cat <<EOF
+Usage: ${name##*/} [flags] [disc-image] [extra QEMU args...]
+
+Flags (must come before any disc image):
+  --install       Add "QEMU G5" to the desktop menu (freedesktop.org standard:
+                  desktop entry in ~/.local/share/applications + icon in the
+                  hicolor theme and ~/.local/share/pixmaps)
+  --uninstall     Remove the menu entry and icons created by --install
+  --third-party   Integrate with a third-party AppImage integrator if one is
+                  installed (appimaged / AppImageLauncher)
+  -h, --help      Show this help
+
+With no flags, boots the VM. First run without a disc image opens a file
+picker (*.iso *.img *.dmg *.toast *.bin *.cue) and creates the disk.
+
+Environment: QEMU_G5_MEM (MB, max 16384), QEMU_G5_SMP (max 16), QEMU_G5_CPU,
+QEMU_G5_GPU (ati-radeon9800|std|none), QEMU_G5_NET=none, QEMU_G5_DISK,
+QEMU_G5_STATE, QEMU_G5_RAW=1 (raw QEMU, skips this wrapper)
+EOF
+}
+
+install_entry() {
+    local appimg="${APPIMAGE:-}"
+    if [ -z "$appimg" ] || [ ! -e "$appimg" ]; then
+        echo "--install must be run from the AppImage itself (APPIMAGE not set)." >&2
+        exit 1
+    fi
+    local base="${XDG_DATA_HOME:-$HOME/.local/share}"
+    local desk="$base/applications/qemu-g5.desktop"
+    local icon="$base/icons/hicolor/scalable/apps/qemu-g5.svg"
+    local pix="$base/pixmaps/qemu-g5.svg"
+    mkdir -p "${desk%/*}" "${icon%/*}" "${pix%/*}"
+    local line
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+            Exec=*) printf 'Exec=%s\n' "$appimg" ;;
+            *) printf '%s\n' "$line" ;;
+        esac
+    done < "$APPDIR/qemu-g5.desktop" > "$desk"
+    cp -f "$APPDIR/qemu-g5.svg" "$icon"
+    cp -f "$APPDIR/qemu-g5.svg" "$pix"
+    if command -v update-desktop-database >/dev/null 2>&1; then
+        update-desktop-database "${desk%/*}" >/dev/null 2>&1 || true
+    fi
+    echo "Menu entry installed:"
+    echo "  $desk"
+    echo "  $icon"
+    echo "  $pix"
+}
+
+uninstall_entry() {
+    local base="${XDG_DATA_HOME:-$HOME/.local/share}"
+    rm -f "$base/applications/qemu-g5.desktop" \
+         "$base/icons/hicolor/scalable/apps/qemu-g5.svg" \
+         "$base/pixmaps/qemu-g5.svg"
+    if command -v update-desktop-database >/dev/null 2>&1; then
+        update-desktop-database "$base/applications" >/dev/null 2>&1 || true
+    fi
+    echo "Menu entry removed."
+}
+
+third_party() {
+    local appimg="${APPIMAGE:-}"
+    local found=""
+    if command -v appimaged >/dev/null 2>&1; then
+        found=appimaged
+    elif command -v pgrep >/dev/null 2>&1 && pgrep -x appimaged >/dev/null 2>&1; then
+        found=appimaged
+    elif command -v appimagelauncherd >/dev/null 2>&1 || command -v appimagelauncher >/dev/null 2>&1; then
+        found=AppImageLauncher
+    fi
+
+    case "$found" in
+    appimaged)
+        if [ -z "$appimg" ] || [ ! -e "$appimg" ]; then
+            echo "--third-party must be run from the AppImage itself (APPIMAGE not set)." >&2
+            exit 1
+        fi
+        local dest="$HOME/Applications"
+        mkdir -p "$dest"
+        cp -f "$appimg" "$dest/${appimg##*/}"
+        echo "appimaged detected: copied to $dest (a watched folder)."
+        echo "It will create the menu entry within a few seconds."
+        ;;
+    AppImageLauncher)
+        echo "AppImageLauncher detected: it integrates AppImages when opened"
+        echo "from the file manager (it may have prompted you already)."
+        echo "The menu entry is managed by AppImageLauncher."
+        ;;
+    *)
+        echo "No third-party integrator found (appimaged, AppImageLauncher)."
+        echo "Install one, e.g. AppImageLauncher (github.com/TheAssassin/AppImageLauncher),"
+        echo "or use the built-in freedesktop integration:"
+        echo "  ${appimg:-qemu-g5-x86_64.AppImage} --install"
+        ;;
+    esac
+}
+
+case "${1:-}" in
+    --install)   install_entry; exit 0 ;;
+    --uninstall) uninstall_entry; exit 0 ;;
+    --third-party) third_party; exit 0 ;;
+    -h|--help)   usage; exit 0 ;;
+esac
+
+# Defaults based on Cat_7's G5 PowerMac7,3 package (emaculation.com t=12803/12804).
+# Max: 16 CPUs (Tiger/Leopard only; Panther is 2), 16 GB RAM.
+MEM="${QEMU_G5_MEM:-2048}"
+SMP="${QEMU_G5_SMP:-2}"
+CPU="${QEMU_G5_CPU:-970fx}"
+GPU="${QEMU_G5_GPU:-ati-radeon9800}"
+NET="${QEMU_G5_NET:-slirp}"
+
+pick_file() {
+    if command -v zenity >/dev/null 2>&1; then
+        zenity --file-selection "$@" 2>/dev/null
+    elif command -v kdialog >/dev/null 2>&1; then
+        kdialog --getopenfilename . 2>/dev/null
+    else
+        return 1
+    fi
+}
+
+ask_text() {
+    if command -v zenity >/dev/null 2>&1; then
+        zenity --entry "$@" 2>/dev/null
+    elif command -v kdialog >/dev/null 2>&1; then
+        kdialog --inputbox "$TEXT" "${ENTRY_TEXT}" 2>/dev/null
+    else
+        return 1
+    fi
+}
+
+if command -v zenity >/dev/null 2>&1 || command -v kdialog >/dev/null 2>&1; then
+    HAVE_DIALOG=1
+fi
+
+mkdir -p "$STATE"
+
+ISO=""
+if [ $# -gt 0 ] && [ -f "$1" ]; then
+    ISO="$1"
+    shift
+fi
+
+if [ ! -f "$DISK" ]; then
+    if [ -z "$ISO" ]; then
+        if [ -z "${HAVE_DIALOG:-}" ]; then
+            echo "No disk image at $DISK and no file dialog tool (zenity/kdialog) available." >&2
+            echo "Run from a terminal with:" >&2
+            echo "  $0 /path/to/install.iso" >&2
+            exit 1
+        fi
+        ISO=$(pick_file --title="Select an install ISO for the G5 VM" \
+            --filename="$HOME/" \
+            --file-filter="Disc images | *.iso *.img *.dmg *.toast *.bin *.cue") || exit 1
+    fi
+    [ -n "$ISO" ] || exit 1
+    TEXT="No disk image found at:
+$DISK
+
+Disk size:"
+    ENTRY_TEXT="20G"
+    if [ -n "${HAVE_DIALOG:-}" ]; then
+        SIZE=$(ask_text --title="Create virtual disk" --text="$TEXT" --entry-text="20G") || exit 1
+    else
+        SIZE=20G
+    fi
+    [ -n "$SIZE" ] || SIZE=20G
+    if command -v qemu-img >/dev/null 2>&1; then
+        qemu-img create -f qcow2 "$DISK" "$SIZE"
+    else
+        echo "qemu-img not found - install it (Debian/Ubuntu: sudo apt install qemu-utils)" >&2
+        exit 1
+    fi
+fi
+
+if [ -n "$ISO" ]; then
+    BOOT=(-boot d -cdrom "$ISO")
+    # The NVRAM records the Startup Disk choice and overrides -boot c/-boot d
+    # (emaculation t=12804, Andrew_R/Cat_7). Fresh NVRAM makes CD boot win.
+    if [ -f "$STATE/nvram.img" ]; then
+        echo "Note: removing nvram.img so booting from the disc image takes precedence." >&2
+        rm -f "$STATE/nvram.img"
+    fi
+else
+    BOOT=(-boot c)
+fi
+
+if [ "$GPU" = "std" ] || [ "$GPU" = "none" ]; then
+    GPU_ARGS=(-vga "$GPU")
+else
+    GPU_ARGS=(-vga none -device "$GPU")
+fi
+
+if [ "$NET" = "none" ]; then
+    NET_ARGS=()
+else
+    NET_ARGS=(-netdev user,id=net0 -device sungem,netdev=net0)
+fi
+
+cd "$STATE"
+exec "$TO_LAUNCH" \
+    -L "$BIOSDIR" \
+    -bios "$BIOSDIR/openbios-qemu.elf" \
+    -machine mac99,via=pmu \
+    -cpu "$CPU" \
+    -smp "$SMP" \
+    -m "$MEM" \
+    "${GPU_ARGS[@]}" \
+    -device pci-ohci,id=usb1 \
+    -device usb-kbd,bus=usb1.0 \
+    -device usb-mouse,bus=usb1.0 \
+    "${NET_ARGS[@]}" \
+    -drive "file=$DISK,format=qcow2,if=ide" \
+    "${BOOT[@]}" \
+    "$@"

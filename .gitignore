@@ -1,0 +1,5 @@
+*.AppImage
+squashfs-root/
+*.squashfs
+runtime
+SHA256SUMS

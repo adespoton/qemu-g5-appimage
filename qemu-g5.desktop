@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=QEMU G5
+GenericName=PowerPC G5 Virtual Machine
+Comment=Boot a PowerMac7,3 G5 virtual machine (QEMU, Mac OS X 10.3-10.5)
+Exec=qemu-g5
+Icon=qemu-g5
+Terminal=false
+Type=Application
+Categories=System;Emulator;
+Keywords=Emulator;Virtualization;PPC;PowerPC;G5;Mac;OSX;
+StartupWMClass=qemu
